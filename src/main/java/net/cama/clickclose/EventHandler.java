@@ -4,6 +4,8 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
@@ -123,12 +125,6 @@ public class EventHandler {
         float scale = Config.CURSOR_SCALE.get().floatValue();
         guiGraphics.pose().scale(scale, scale, 1.0f);
         
-        // Draw 16x16 texture centered
-        // We need to offset by half size *after* scaling? No, translate first, then scale.
-        // If we scale, the drawing coordinates are scaled.
-        // We want the center of the scaled image to be at (0,0) (which is mouseX, mouseY).
-        // So we draw at -8, -8.
-
         guiGraphics.blit(CLOSE_ICON, -8, -8, 0, 0, 16, 16, 16, 16);
         guiGraphics.pose().popPose();
         RenderSystem.disableBlend();
@@ -171,6 +167,11 @@ public class EventHandler {
                 }
             }
             
+            // Check if mouse is over any slot (Handles Curios slots and other modded slots outside main GUI)
+            if (containerScreen.getSlotUnderMouse() != null) {
+                return false;
+            }
+            
             int guiLeft = containerScreen.leftPos;
             int guiTop = containerScreen.topPos;
             int xSize = containerScreen.imageWidth;
@@ -191,8 +192,21 @@ public class EventHandler {
             }
             
             if (!inside) {
+                 // Check if any child widget is under the mouse
+                 // This handles buttons, search bars, etc. added by mods or vanilla
                  if (screen.getChildAt(mouseX, mouseY).isPresent()) {
                     return false;
+                }
+                
+                // Iterate over all children to check if any AbstractWidget is hovered
+                // This is more robust for widgets that might not be returned by getChildAt correctly or have complex hitboxes
+                for (GuiEventListener child : screen.children()) {
+                    if (child instanceof AbstractWidget) {
+                        AbstractWidget widget = (AbstractWidget) child;
+                        if (widget.visible && widget.isMouseOver(mouseX, mouseY)) {
+                            return false;
+                        }
+                    }
                 }
                 
                 if (screen instanceof CreativeModeInventoryScreen) {
@@ -204,6 +218,11 @@ public class EventHandler {
                              return false;
                          }
                      }
+                }
+                
+                // JEI Compatibility
+                if (isJeiLoaded() && JeiCompat.isMouseOverJei(mouseX, mouseY)) {
+                    return false;
                 }
 
                 return true;
@@ -251,6 +270,16 @@ public class EventHandler {
             java.lang.reflect.Field field = obj.getClass().getDeclaredField(mcpName);
             field.setAccessible(true);
             return field.getInt(obj);
+        }
+    }
+    
+    private static boolean isJeiLoaded() {
+        return net.minecraftforge.fml.ModList.get().isLoaded("jei");
+    }
+    
+    private static class JeiCompat {
+        static boolean isMouseOverJei(double mouseX, double mouseY) {
+            return JeiHandler.isMouseOver(mouseX, mouseY);
         }
     }
 }
