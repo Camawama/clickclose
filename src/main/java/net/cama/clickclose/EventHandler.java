@@ -37,7 +37,13 @@ public class EventHandler {
 
             if (shouldClose(screen, event.getMouseX(), event.getMouseY())) {
                 playCloseSound();
-                screen.onClose();
+                
+                // Force close the screen completely, bypassing JEI's "back" navigation
+                // JEI hooks into gui.onClose() or similar to go back.
+                // We want to close the entire GUI stack.
+                // Minecraft.getInstance().setScreen(null) closes everything and returns to game.
+                Minecraft.getInstance().setScreen(null);
+                
                 event.setCanceled(true);
             }
         }
@@ -135,18 +141,32 @@ public class EventHandler {
     }
 
     private static void renderDimGui(GuiGraphics guiGraphics, Screen screen) {
+        int guiLeft = 0, guiTop = 0, xSize = 0, ySize = 0;
+        boolean foundBounds = false;
+
         if (screen instanceof AbstractContainerScreen) {
             AbstractContainerScreen<?> containerScreen = (AbstractContainerScreen<?>) screen;
-            int x = containerScreen.leftPos;
-            int y = containerScreen.topPos;
-            int w = containerScreen.imageWidth;
-            int h = containerScreen.imageHeight;
-            
+            guiLeft = containerScreen.leftPos;
+            guiTop = containerScreen.topPos;
+            xSize = containerScreen.imageWidth;
+            ySize = containerScreen.imageHeight;
+            foundBounds = true;
+        } else if (isJeiLoaded()) {
+            int[] bounds = JeiCompat.getScreenBounds(screen);
+            if (bounds != null) {
+                guiLeft = bounds[0];
+                guiTop = bounds[1];
+                xSize = bounds[2];
+                ySize = bounds[3];
+                foundBounds = true;
+            }
+        }
+
+        if (foundBounds) {
             double opacity = Config.DIMMING_OPACITY.get();
             int alpha = (int) (opacity * 255);
             int color = (alpha << 24); // Black with variable alpha
-            
-            guiGraphics.fill(x, y, x + w, y + h, color);
+            guiGraphics.fill(guiLeft, guiTop, guiLeft + xSize, guiTop + ySize, color);
         }
     }
 
@@ -155,6 +175,12 @@ public class EventHandler {
         if (Config.IGNORED_SCREENS.get().contains(screenName)) {
             return false;
         }
+
+        int guiLeft = 0;
+        int guiTop = 0;
+        int xSize = 0;
+        int ySize = 0;
+        boolean isContainer = false;
 
         if (screen instanceof AbstractContainerScreen) {
             AbstractContainerScreen<?> containerScreen = (AbstractContainerScreen<?>) screen;
@@ -172,11 +198,24 @@ public class EventHandler {
                 return false;
             }
             
-            int guiLeft = containerScreen.leftPos;
-            int guiTop = containerScreen.topPos;
-            int xSize = containerScreen.imageWidth;
-            int ySize = containerScreen.imageHeight;
+            guiLeft = containerScreen.leftPos;
+            guiTop = containerScreen.topPos;
+            xSize = containerScreen.imageWidth;
+            ySize = containerScreen.imageHeight;
+            isContainer = true;
+        } else if (isJeiLoaded()) {
+            // Use JEI API to get bounds for any screen JEI supports (including RecipesGui)
+            int[] bounds = JeiCompat.getScreenBounds(screen);
+            if (bounds != null) {
+                guiLeft = bounds[0];
+                guiTop = bounds[1];
+                xSize = bounds[2];
+                ySize = bounds[3];
+                isContainer = true;
+            }
+        }
 
+        if (isContainer) {
             boolean inside = mouseX >= guiLeft && mouseX < guiLeft + xSize &&
                              mouseY >= guiTop && mouseY < guiTop + ySize;
 
@@ -193,13 +232,11 @@ public class EventHandler {
             
             if (!inside) {
                  // Check if any child widget is under the mouse
-                 // This handles buttons, search bars, etc. added by mods or vanilla
                  if (screen.getChildAt(mouseX, mouseY).isPresent()) {
                     return false;
                 }
                 
                 // Iterate over all children to check if any AbstractWidget is hovered
-                // This is more robust for widgets that might not be returned by getChildAt correctly or have complex hitboxes
                 for (GuiEventListener child : screen.children()) {
                     if (child instanceof AbstractWidget) {
                         AbstractWidget widget = (AbstractWidget) child;
@@ -221,8 +258,25 @@ public class EventHandler {
                 }
                 
                 // JEI Compatibility
-                if (isJeiLoaded() && JeiCompat.isMouseOverJei(mouseX, mouseY)) {
-                    return false;
+                if (isJeiLoaded()) {
+                    if (JeiCompat.isRecipesGui(screen)) {
+                        // Check for tabs above the GUI
+                        if (mouseY >= guiTop - 30 && mouseY <= guiTop) {
+                            if (mouseX >= guiLeft && mouseX <= guiLeft + xSize) {
+                                return false;
+                            }
+                        }
+                        
+                        // ALSO check for JEI overlays (ingredients) even in Recipes GUI
+                        if (JeiCompat.isMouseOverJei(mouseX, mouseY)) {
+                            return false;
+                        }
+                    } else {
+                        // Only check JEI overlays if NOT in Recipes GUI
+                        if (JeiCompat.isMouseOverJei(mouseX, mouseY)) {
+                            return false;
+                        }
+                    }
                 }
 
                 return true;
@@ -280,6 +334,14 @@ public class EventHandler {
     private static class JeiCompat {
         static boolean isMouseOverJei(double mouseX, double mouseY) {
             return JeiHandler.isMouseOver(mouseX, mouseY);
+        }
+        
+        static boolean isRecipesGui(Screen screen) {
+            return JeiHandler.isRecipesGui(screen);
+        }
+        
+        static int[] getScreenBounds(Screen screen) {
+            return JeiHandler.getScreenBounds(screen);
         }
     }
 }
