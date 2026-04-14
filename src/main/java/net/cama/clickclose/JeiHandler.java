@@ -16,7 +16,7 @@ public class JeiHandler implements IModPlugin {
 
     @Override
     public ResourceLocation getPluginUid() {
-        return new ResourceLocation(ClickClose.MODID, "jei_plugin");
+        return ResourceLocation.parse(ClickClose.MODID + ":jei_plugin");
     }
 
     @Override
@@ -92,10 +92,10 @@ public class JeiHandler implements IModPlugin {
                 if (guiPropertiesOpt.isPresent()) {
                     IGuiProperties guiProperties = guiPropertiesOpt.get();
                     return new int[]{
-                        guiProperties.getGuiLeft(),
-                        guiProperties.getGuiTop(),
-                        guiProperties.getGuiXSize(),
-                        guiProperties.getGuiYSize()
+                        guiProperties.guiLeft(),
+                        guiProperties.guiTop(),
+                        guiProperties.guiXSize(),
+                        guiProperties.guiYSize()
                     };
                 }
             }
