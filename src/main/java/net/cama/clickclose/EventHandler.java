@@ -1,7 +1,7 @@
 package net.cama.clickclose;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.logging.LogUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
@@ -22,12 +22,22 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.registries.ForgeRegistries;
 import org.lwjgl.glfw.GLFW;
+import org.slf4j.Logger;
 
 @Mod.EventBusSubscriber(modid = ClickClose.MODID, value = Dist.CLIENT)
 public class EventHandler {
 
+    private static final Logger LOGGER = LogUtils.getLogger();
     private static final ResourceLocation CLOSE_ICON = new ResourceLocation(ClickClose.MODID, "textures/gui/close_icon.png");
+    // Width of the filter tab strip sticking out on the left side of the recipe book
+    private static final int RECIPE_BOOK_TAB_STRIP_WIDTH = 35;
     private static boolean isCursorHidden = false;
+
+    private record ScreenBounds(int left, int top, int width, int height) {
+        boolean contains(double mouseX, double mouseY) {
+            return mouseX >= left && mouseX < left + width && mouseY >= top && mouseY < top + height;
+        }
+    }
 
     @SubscribeEvent
     public static void onMouseClick(ScreenEvent.MouseButtonPressed.Pre event) {
@@ -37,13 +47,21 @@ public class EventHandler {
 
             if (shouldClose(screen, event.getMouseX(), event.getMouseY())) {
                 playCloseSound();
-                
-                // Force close the screen completely, bypassing JEI's "back" navigation
-                // JEI hooks into gui.onClose() or similar to go back.
-                // We want to close the entire GUI stack.
-                // Minecraft.getInstance().setScreen(null) closes everything and returns to game.
-                Minecraft.getInstance().setScreen(null);
-                
+
+                Minecraft minecraft = Minecraft.getInstance();
+                if (screen instanceof AbstractContainerScreen && minecraft.player != null) {
+                    // Close through the player so ServerboundContainerClosePacket is sent.
+                    // setScreen(null) alone leaves the server-side container open (chest lids
+                    // stay open, villager trades stay locked, input slots can desync).
+                    // This also bypasses JEI's "back" navigation, which is intentional:
+                    // we want to close the entire GUI stack.
+                    minecraft.player.closeContainer();
+                } else {
+                    // Non-container screens (e.g. JEI RecipesGui) have no server-side
+                    // container to close.
+                    minecraft.setScreen(null);
+                }
+
                 event.setCanceled(true);
             }
         }
@@ -59,7 +77,7 @@ public class EventHandler {
                     Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(soundEvent, 1.0F));
                 }
             } catch (Exception e) {
-                // Invalid sound name, ignore
+                LOGGER.debug("Could not play close sound '{}'", soundName, e);
             }
         }
     }
@@ -80,11 +98,13 @@ public class EventHandler {
 
         if (shouldClose(screen, mouseX, mouseY)) {
             GuiGraphics guiGraphics = event.getGuiGraphics();
-            
+
             switch (mode) {
                 case CURSOR_X:
                     if (Config.HIDE_DEFAULT_CURSOR.get()) {
                         hideCursor();
+                    } else {
+                        restoreCursor();
                     }
                     renderCursorIcon(guiGraphics, mouseX, mouseY);
                     break;
@@ -101,7 +121,7 @@ public class EventHandler {
             restoreCursor();
         }
     }
-    
+
     // Ensure cursor is restored when screen closes or changes
     @SubscribeEvent
     public static void onScreenClose(ScreenEvent.Closing event) {
@@ -127,64 +147,64 @@ public class EventHandler {
         RenderSystem.enableBlend();
         guiGraphics.pose().pushPose();
         guiGraphics.pose().translate(mouseX, mouseY, 500); // On top
-        
+
         float scale = Config.CURSOR_SCALE.get().floatValue();
         guiGraphics.pose().scale(scale, scale, 1.0f);
-        
+
         guiGraphics.blit(CLOSE_ICON, -8, -8, 0, 0, 16, 16, 16, 16);
         guiGraphics.pose().popPose();
         RenderSystem.disableBlend();
     }
 
     private static void renderTooltip(GuiGraphics guiGraphics, double mouseX, double mouseY) {
-        guiGraphics.renderTooltip(Minecraft.getInstance().font, Component.literal("Close Menu"), (int)mouseX, (int)mouseY);
+        guiGraphics.renderTooltip(Minecraft.getInstance().font, Component.translatable("clickclose.tooltip.close"), (int) mouseX, (int) mouseY);
     }
 
     private static void renderDimGui(GuiGraphics guiGraphics, Screen screen) {
-        int guiLeft = 0, guiTop = 0, xSize = 0, ySize = 0;
-        boolean foundBounds = false;
-
-        if (screen instanceof AbstractContainerScreen) {
-            AbstractContainerScreen<?> containerScreen = (AbstractContainerScreen<?>) screen;
-            guiLeft = containerScreen.leftPos;
-            guiTop = containerScreen.topPos;
-            xSize = containerScreen.imageWidth;
-            ySize = containerScreen.imageHeight;
-            foundBounds = true;
-        } else if (isJeiLoaded()) {
-            int[] bounds = JeiCompat.getScreenBounds(screen);
-            if (bounds != null) {
-                guiLeft = bounds[0];
-                guiTop = bounds[1];
-                xSize = bounds[2];
-                ySize = bounds[3];
-                foundBounds = true;
-            }
-        }
-
-        if (foundBounds) {
+        ScreenBounds bounds = getScreenBounds(screen);
+        if (bounds != null) {
             double opacity = Config.DIMMING_OPACITY.get();
             int alpha = (int) (opacity * 255);
             int color = (alpha << 24); // Black with variable alpha
-            guiGraphics.fill(guiLeft, guiTop, guiLeft + xSize, guiTop + ySize, color);
+            guiGraphics.fill(bounds.left(), bounds.top(), bounds.left() + bounds.width(), bounds.top() + bounds.height(), color);
         }
     }
 
+    private static ScreenBounds getScreenBounds(Screen screen) {
+        if (screen instanceof AbstractContainerScreen<?> containerScreen) {
+            return new ScreenBounds(containerScreen.getGuiLeft(), containerScreen.getGuiTop(),
+                    containerScreen.getXSize(), containerScreen.getYSize());
+        }
+        if (isJeiLoaded()) {
+            // Use JEI API to get bounds for any screen JEI supports (including RecipesGui)
+            int[] jeiBounds = JeiCompat.getScreenBounds(screen);
+            if (jeiBounds != null) {
+                return new ScreenBounds(jeiBounds[0], jeiBounds[1], jeiBounds[2], jeiBounds[3]);
+            }
+        }
+        return null;
+    }
+
+    private static boolean isIgnored(Screen screen) {
+        var ignored = Config.IGNORED_SCREENS.get();
+        if (ignored.isEmpty()) {
+            return false;
+        }
+        // Walk the class hierarchy so modded screens extending an ignored screen are ignored too
+        for (Class<?> c = screen.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            if (ignored.contains(c.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean shouldClose(Screen screen, double mouseX, double mouseY) {
-        String screenName = screen.getClass().getName();
-        if (Config.IGNORED_SCREENS.get().contains(screenName)) {
+        if (isIgnored(screen)) {
             return false;
         }
 
-        int guiLeft = 0;
-        int guiTop = 0;
-        int xSize = 0;
-        int ySize = 0;
-        boolean isContainer = false;
-
-        if (screen instanceof AbstractContainerScreen) {
-            AbstractContainerScreen<?> containerScreen = (AbstractContainerScreen<?>) screen;
-            
+        if (screen instanceof AbstractContainerScreen<?> containerScreen) {
             // Check if player is holding an item
             if (containerScreen.getMenu() != null) {
                 ItemStack carried = containerScreen.getMenu().getCarried();
@@ -192,154 +212,91 @@ public class EventHandler {
                     return false;
                 }
             }
-            
+
             // Check if mouse is over any slot (Handles Curios slots and other modded slots outside main GUI)
             if (containerScreen.getSlotUnderMouse() != null) {
                 return false;
             }
-            
-            guiLeft = containerScreen.leftPos;
-            guiTop = containerScreen.topPos;
-            xSize = containerScreen.imageWidth;
-            ySize = containerScreen.imageHeight;
-            isContainer = true;
-        } else if (isJeiLoaded()) {
-            // Use JEI API to get bounds for any screen JEI supports (including RecipesGui)
-            int[] bounds = JeiCompat.getScreenBounds(screen);
-            if (bounds != null) {
-                guiLeft = bounds[0];
-                guiTop = bounds[1];
-                xSize = bounds[2];
-                ySize = bounds[3];
-                isContainer = true;
+        }
+
+        ScreenBounds bounds = getScreenBounds(screen);
+        if (bounds == null || bounds.contains(mouseX, mouseY)) {
+            return false;
+        }
+
+        if (screen instanceof RecipeUpdateListener recipeListener) {
+            RecipeBookComponent recipeBook = recipeListener.getRecipeBookComponent();
+            if (recipeBook.isVisible() && isInsideRecipeBook(recipeBook, mouseX, mouseY)) {
+                return false;
             }
         }
 
-        if (isContainer) {
-            boolean inside = mouseX >= guiLeft && mouseX < guiLeft + xSize &&
-                             mouseY >= guiTop && mouseY < guiTop + ySize;
+        // Check if any child widget is under the mouse
+        if (screen.getChildAt(mouseX, mouseY).isPresent()) {
+            return false;
+        }
 
-            if (!inside && screen instanceof RecipeUpdateListener) {
-                RecipeUpdateListener recipeListener = (RecipeUpdateListener) screen;
-                RecipeBookComponent recipeBook = recipeListener.getRecipeBookComponent();
-                
-                if (recipeBook.isVisible()) {
-                     if (isInsideRecipeBook(recipeBook, mouseX, mouseY, guiLeft, guiTop, xSize, ySize)) {
-                         return false;
-                     }
-                }
-            }
-            
-            if (!inside) {
-                 // Check if any child widget is under the mouse
-                 if (screen.getChildAt(mouseX, mouseY).isPresent()) {
-                    return false;
-                }
-                
-                // Iterate over all children to check if any AbstractWidget is hovered
-                for (GuiEventListener child : screen.children()) {
-                    if (child instanceof AbstractWidget) {
-                        AbstractWidget widget = (AbstractWidget) child;
-                        if (widget.visible && widget.isMouseOver(mouseX, mouseY)) {
-                            return false;
-                        }
-                    }
-                }
-                
-                if (screen instanceof CreativeModeInventoryScreen) {
-                     boolean overTopTabs = mouseY >= guiTop - 28 && mouseY <= guiTop;
-                     boolean overBottomTabs = mouseY >= guiTop + ySize - 4 && mouseY <= guiTop + ySize + 28;
-                     
-                     if (overTopTabs || overBottomTabs) {
-                         if (mouseX >= guiLeft && mouseX <= guiLeft + xSize) {
-                             return false;
-                         }
-                     }
-                }
-                
-                // JEI Compatibility
-                if (isJeiLoaded()) {
-                    if (JeiCompat.isRecipesGui(screen)) {
-                        // Check for tabs above the GUI
-                        if (mouseY >= guiTop - 30 && mouseY <= guiTop) {
-                            if (mouseX >= guiLeft && mouseX <= guiLeft + xSize) {
-                                return false;
-                            }
-                        }
-                        
-                        // ALSO check for JEI overlays (ingredients) even in Recipes GUI
-                        if (JeiCompat.isMouseOverJei(mouseX, mouseY)) {
-                            return false;
-                        }
-                    } else {
-                        // Only check JEI overlays if NOT in Recipes GUI
-                        if (JeiCompat.isMouseOverJei(mouseX, mouseY)) {
-                            return false;
-                        }
-                    }
-                }
-
-                return true;
+        // Iterate over all children to check if any AbstractWidget is hovered
+        for (GuiEventListener child : screen.children()) {
+            if (child instanceof AbstractWidget widget && widget.visible && widget.isMouseOver(mouseX, mouseY)) {
+                return false;
             }
         }
-        return false;
+
+        if (screen instanceof CreativeModeInventoryScreen) {
+            boolean overTopTabs = mouseY >= bounds.top() - 28 && mouseY <= bounds.top();
+            boolean overBottomTabs = mouseY >= bounds.top() + bounds.height() - 4 && mouseY <= bounds.top() + bounds.height() + 28;
+
+            if ((overTopTabs || overBottomTabs) && mouseX >= bounds.left() && mouseX <= bounds.left() + bounds.width()) {
+                return false;
+            }
+        }
+
+        // JEI Compatibility
+        if (isJeiLoaded()) {
+            // Check for tabs above the Recipes GUI
+            if (JeiCompat.isRecipesGui(screen)
+                    && mouseY >= bounds.top() - 30 && mouseY <= bounds.top()
+                    && mouseX >= bounds.left() && mouseX <= bounds.left() + bounds.width()) {
+                return false;
+            }
+
+            // JEI overlays (ingredient list, bookmarks) apply to every screen, RecipesGui included
+            if (JeiCompat.isMouseOverJei(mouseX, mouseY)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    private static boolean isInsideRecipeBook(RecipeBookComponent recipeBook, double mouseX, double mouseY, int guiLeft, int guiTop, int guiWidth, int guiHeight) {
-        try {
-            int x = getIntField(recipeBook, "f_100276_", "x");
-            int y = getIntField(recipeBook, "f_100277_", "y");
-            int width = getIntField(recipeBook, "f_100278_", "width");
-            int height = getIntField(recipeBook, "f_100279_", "height");
-            
-            if (mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height) {
-                return true;
-            }
-            
-            if (mouseX >= x - 35 && mouseX < x && mouseY >= y && mouseY < y + height) {
-                return true;
-            }
-        } catch (Exception e) {
-        }
-        
-        double bookWidth = 147;
-        double tabsWidth = 35;
-        double totalWidth = bookWidth + tabsWidth;
-        
-        if (mouseX >= guiLeft - totalWidth && mouseX < guiLeft) {
-            if (mouseY >= guiTop && mouseY < guiTop + guiHeight) {
-                return true;
-            }
-        }
-        
-        return false;
+    private static boolean isInsideRecipeBook(RecipeBookComponent recipeBook, double mouseX, double mouseY) {
+        // xOffset/width/height are made public by our access transformer. width/height hold
+        // the SCREEN size, not the book size — the book's position is derived here exactly
+        // the way RecipeBookComponent.initVisuals computes it.
+        int left = (recipeBook.width - RecipeBookComponent.IMAGE_WIDTH) / 2 - recipeBook.xOffset;
+        int top = (recipeBook.height - RecipeBookComponent.IMAGE_HEIGHT) / 2;
+
+        return mouseX >= left - RECIPE_BOOK_TAB_STRIP_WIDTH
+                && mouseX < left + RecipeBookComponent.IMAGE_WIDTH
+                && mouseY >= top
+                && mouseY < top + RecipeBookComponent.IMAGE_HEIGHT;
     }
 
-    private static int getIntField(Object obj, String srgName, String mcpName) throws Exception {
-        try {
-            java.lang.reflect.Field field = obj.getClass().getDeclaredField(srgName);
-            field.setAccessible(true);
-            return field.getInt(obj);
-        } catch (NoSuchFieldException e) {
-            java.lang.reflect.Field field = obj.getClass().getDeclaredField(mcpName);
-            field.setAccessible(true);
-            return field.getInt(obj);
-        }
-    }
-    
     private static boolean isJeiLoaded() {
         return net.minecraftforge.fml.ModList.get().isLoaded("jei");
     }
-    
+
+    // Indirection so JeiHandler (which references JEI classes) is only loaded when JEI is present
     private static class JeiCompat {
         static boolean isMouseOverJei(double mouseX, double mouseY) {
             return JeiHandler.isMouseOver(mouseX, mouseY);
         }
-        
+
         static boolean isRecipesGui(Screen screen) {
             return JeiHandler.isRecipesGui(screen);
         }
-        
+
         static int[] getScreenBounds(Screen screen) {
             return JeiHandler.getScreenBounds(screen);
         }
