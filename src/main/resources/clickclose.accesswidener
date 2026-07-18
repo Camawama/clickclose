@@ -1,0 +1,15 @@
+accessWidener v2 named
+
+# Screen bounds + hovered slot (no public getters in vanilla; reflection by mapped
+# name would break in production where fields are intermediary-named)
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen leftPos I
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen topPos I
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen imageWidth I
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen imageHeight I
+accessible field net/minecraft/client/gui/screens/inventory/AbstractContainerScreen hoveredSlot Lnet/minecraft/world/inventory/Slot;
+
+# Recipe book position: width/height hold the screen size, xOffset the book shift;
+# the book rectangle is derived the same way RecipeBookComponent.initVisuals does
+accessible field net/minecraft/client/gui/screens/recipebook/RecipeBookComponent xOffset I
+accessible field net/minecraft/client/gui/screens/recipebook/RecipeBookComponent width I
+accessible field net/minecraft/client/gui/screens/recipebook/RecipeBookComponent height I

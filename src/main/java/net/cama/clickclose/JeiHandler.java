@@ -8,11 +8,19 @@ import mezz.jei.api.runtime.IScreenHelper;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.resources.ResourceLocation;
 
+import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @JeiPlugin
 public class JeiHandler implements IModPlugin {
     private static IJeiRuntime runtime;
+
+    // isMouseOver runs every frame: cache reflection lookups and only log each failure once
+    private static final Map<Class<?>, Optional<Method>> IS_MOUSE_OVER_CACHE = new ConcurrentHashMap<>();
+    private static final Set<String> LOGGED_FAILURES = ConcurrentHashMap.newKeySet();
 
     @Override
     public ResourceLocation getPluginUid() {
@@ -24,14 +32,22 @@ public class JeiHandler implements IModPlugin {
         runtime = jeiRuntime;
     }
 
+    private static void logOnce(String what, Throwable t) {
+        if (LOGGED_FAILURES.add(what)) {
+            ClickClose.LOGGER.debug("ClickClose JEI compat: {} failed", what, t);
+        }
+    }
+
     public static boolean isMouseOver(double mouseX, double mouseY) {
         if (runtime == null) return false;
-        
+
+        // Default to false on error so an API hiccup doesn't permanently block
+        // closing across the bottom strip of the screen
         boolean listDisplayed = false;
         try {
             listDisplayed = runtime.getIngredientListOverlay().isListDisplayed();
         } catch (Exception e) {
-            listDisplayed = true;
+            logOnce("isListDisplayed", e);
         }
 
         try {
@@ -39,33 +55,35 @@ public class JeiHandler implements IModPlugin {
                 return true;
             }
         } catch (Exception e) {
+            logOnce("ingredient list getIngredientUnderMouse", e);
         }
-        
+
         try {
             if (runtime.getBookmarkOverlay().getIngredientUnderMouse().isPresent()) {
                 return true;
             }
         } catch (Exception e) {
+            logOnce("bookmark getIngredientUnderMouse", e);
         }
-        
-        // Reflection fallback for isMouseOver
+
+        // Reflection fallback for isMouseOver (not part of the JEI API interfaces)
         try {
-            Object ingredientOverlay = runtime.getIngredientListOverlay();
-            if ((boolean) ingredientOverlay.getClass().getMethod("isMouseOver", double.class, double.class).invoke(ingredientOverlay, mouseX, mouseY)) {
+            if (invokeIsMouseOver(runtime.getIngredientListOverlay(), mouseX, mouseY)) {
                 return true;
             }
         } catch (Exception e) {
+            logOnce("ingredient list isMouseOver", e);
         }
-        
+
         try {
-            Object bookmarkOverlay = runtime.getBookmarkOverlay();
-            if ((boolean) bookmarkOverlay.getClass().getMethod("isMouseOver", double.class, double.class).invoke(bookmarkOverlay, mouseX, mouseY)) {
+            if (invokeIsMouseOver(runtime.getBookmarkOverlay(), mouseX, mouseY)) {
                 return true;
             }
         } catch (Exception e) {
+            logOnce("bookmark isMouseOver", e);
         }
-        
-        // Heuristic for search bar area (bottom of screen)
+
+        // Heuristic for the search bar area (bottom of screen).
         // We apply this even in RecipesGui because the search bar is an overlay on top.
         if (listDisplayed) {
             Screen currentScreen = net.minecraft.client.Minecraft.getInstance().screen;
@@ -77,6 +95,18 @@ public class JeiHandler implements IModPlugin {
         }
 
         return false;
+    }
+
+    private static boolean invokeIsMouseOver(Object overlay, double mouseX, double mouseY) throws Exception {
+        if (overlay == null) return false;
+        Optional<Method> method = IS_MOUSE_OVER_CACHE.computeIfAbsent(overlay.getClass(), clazz -> {
+            try {
+                return Optional.of(clazz.getMethod("isMouseOver", double.class, double.class));
+            } catch (NoSuchMethodException e) {
+                return Optional.empty();
+            }
+        });
+        return method.isPresent() && (boolean) method.get().invoke(overlay, mouseX, mouseY);
     }
 
     public static boolean isRecipesGui(Object screen) {
@@ -100,6 +130,7 @@ public class JeiHandler implements IModPlugin {
                 }
             }
         } catch (Exception e) {
+            logOnce("getGuiProperties", e);
             if (isRecipesGui(screen)) {
                 return getRecipesGuiBoundsReflection(screen);
             }
@@ -107,6 +138,7 @@ public class JeiHandler implements IModPlugin {
         return null;
     }
 
+    // Reflection here targets JEI's own classes, whose field names survive remapping
     private static int[] getRecipesGuiBoundsReflection(Object screen) {
         try {
             Class<?> clazz = screen.getClass();
@@ -123,6 +155,7 @@ public class JeiHandler implements IModPlugin {
                 int ySize = (int) screen.getClass().getMethod("getYSize").invoke(screen);
                 return new int[]{guiLeft, guiTop, xSize, ySize};
             } catch (Exception ex) {
+                logOnce("RecipesGui bounds reflection", ex);
                 return null;
             }
         }
