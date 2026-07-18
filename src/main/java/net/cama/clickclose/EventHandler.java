@@ -25,8 +25,6 @@ import org.lwjgl.glfw.GLFW;
 public class EventHandler {
 
     private static final ResourceLocation CLOSE_ICON = ResourceLocation.parse(ClickClose.MODID + ":textures/gui/close_icon.png");
-    private static final int INVENTORY_EDGE_CLOSE_WIDTH = 10;
-    private static final int WINDOW_EDGE_CLOSE_WIDTH = 10;
     private static boolean isRegistered = false;
     private static boolean isCursorHidden = false;
 
@@ -50,8 +48,6 @@ public class EventHandler {
 
                 playCloseSound();
                 client.setScreen(null);
-                client.mouseHandler.grabMouse();
-                clearManagedCursorStateForGameplay();
                 return false;
             });
 
@@ -62,7 +58,7 @@ public class EventHandler {
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.screen == null) {
-                clearManagedCursorStateForGameplay();
+                restoreCursor();
             }
         });
     }
@@ -130,12 +126,6 @@ public class EventHandler {
     private static void restoreCursor() {
         if (isCursorHidden) {
             GLFW.glfwSetInputMode(Minecraft.getInstance().getWindow().getWindow(), GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL);
-            isCursorHidden = false;
-        }
-    }
-
-    private static void clearManagedCursorStateForGameplay() {
-        if (isCursorHidden) {
             isCursorHidden = false;
         }
     }
@@ -241,33 +231,9 @@ public class EventHandler {
                 }
             }
 
-            return isOnInventoryEdge(bounds, mouseX, mouseY) || isOnWindowEdge(screen, mouseX, mouseY);
+            return true;
         }
         return false;
-    }
-
-    private static boolean isOnInventoryEdge(ScreenBounds bounds, double mouseX, double mouseY) {
-        int leftOuter = bounds.left - INVENTORY_EDGE_CLOSE_WIDTH;
-        int rightOuter = bounds.left + bounds.width + INVENTORY_EDGE_CLOSE_WIDTH;
-        int topOuter = bounds.top - INVENTORY_EDGE_CLOSE_WIDTH;
-        int bottomOuter = bounds.top + bounds.height + INVENTORY_EDGE_CLOSE_WIDTH;
-
-        boolean inExpandedX = mouseX >= leftOuter && mouseX < rightOuter;
-        boolean inExpandedY = mouseY >= topOuter && mouseY < bottomOuter;
-
-        boolean nearLeft = mouseX >= leftOuter && mouseX < bounds.left;
-        boolean nearRight = mouseX >= bounds.left + bounds.width && mouseX < rightOuter;
-        boolean nearTop = mouseY >= topOuter && mouseY < bounds.top;
-        boolean nearBottom = mouseY >= bounds.top + bounds.height && mouseY < bottomOuter;
-
-        return (inExpandedY && (nearLeft || nearRight)) || (inExpandedX && (nearTop || nearBottom));
-    }
-
-    private static boolean isOnWindowEdge(Screen screen, double mouseX, double mouseY) {
-        return mouseX < WINDOW_EDGE_CLOSE_WIDTH
-                || mouseY < WINDOW_EDGE_CLOSE_WIDTH
-                || mouseX >= screen.width - WINDOW_EDGE_CLOSE_WIDTH
-                || mouseY >= screen.height - WINDOW_EDGE_CLOSE_WIDTH;
     }
 
     private static Object getSlotUnderMouse(AbstractContainerScreen<?> screen) {
